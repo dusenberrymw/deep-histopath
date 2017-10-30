@@ -4,6 +4,7 @@ import os
 import random
 
 import numpy as np
+import tensorflow as tf
 
 import train_mitoses
 
@@ -122,7 +123,10 @@ def main(args=None):
     train_args.append(f"--log_interval={args.log_interval}")
 
     # train!
-    train_mitoses.main(train_args)
+    try:
+      train_mitoses.main(train_args)
+    except tf.errors.InvalidArgumentError:  # if values become nan or inf
+      print("Experiment failed!")
 
 
 if __name__ == "__main__":
