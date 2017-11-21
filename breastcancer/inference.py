@@ -159,7 +159,6 @@ def predict_mitoses_num_locations(model, model_name, threshold, ROI, tile_size=6
   from train_mitoses import create_augmented_batch, marginalize, normalize
   import keras.backend as K
 
-  ROI = ROI.astype(np.float32)
   ROI_height, ROI_width, ROI_channel = ROI.shape
 
   # gen_dense_coords function will handle the cases that the tile center point is outside of the ROI
@@ -174,7 +173,7 @@ def predict_mitoses_num_locations(model, model_name, threshold, ROI, tile_size=6
     for tile in tiles:
       # NOTE: averaging over sigmoid outputs vs. logits may yield slightly different results, due
       # to numerical precision
-      norm_tile = normalize(tile / 255, model_name)  # normalize tile
+      norm_tile = normalize((tiles / 255).astype(np.float32), model_name)  # normalize tile
       aug_tiles = create_augmented_batch(norm_tile, batch_size)  # create batch of aug versions
       aug_preds = model(aug_tiles)  # make predictions on augmented batch
       pred = marginalize(aug_preds)  # average predictions
@@ -283,7 +282,7 @@ def predict_mitoses_help(model_file, model_name, index, file_partition,
     for ROI_index in ROI_indices:
       # get the ROI
       zl, col, row = ROI_index
-      ROI = np.asarray(generator.get_tile(zl, (col, row))).astype(np.float32)
+      ROI = np.asarray(generator.get_tile(zl, (col, row)))
       # skip the ROIs whose size is smaller than the tile size
       if ROI.shape[0] < tile_size or ROI.shape[1] < tile_size:
         continue
