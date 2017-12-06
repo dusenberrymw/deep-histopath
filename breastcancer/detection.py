@@ -12,12 +12,34 @@ from breastcancer.evaluation import GROUND_TRUTH_FILE_ID_RE
 
 
 def ijv_2_arr(ijv, h, w):
+  """Convert an IJV array with (row,col,val) rows to a 2D array in
+  which [row,col] = val.
+
+  Args:
+    ijv: A NumPy array with 3 columns corresponding to (row,col,val)
+      values.
+    h: The number of rows in the resulting array.
+    w: The number of columns in the resulting array.
+
+  Returns:
+    A 2D NumPy array of shape (h, w) in which [row,col] = val.
+  """
   arr = np.zeros((h, w), dtype=np.float32)
   arr[ijv[:,0].astype(np.int), ijv[:,1].astype(np.int)] = ijv[:,2]
   return arr
 
 
 def arr_2_ijv(arr):
+  """Convert a 2D array in which [row,col] = val to an IJV array with
+  (row,col,val) rows.
+
+  Args:
+    arr: A 2D NumPy array of shape (h, w) in which [row,col] = val.
+
+  Returns:
+    An IJV NumPy array with 3 columns corresponding to (row,col,val)
+    values.
+  """
   r, c = np.nonzero(arr >= 0)
   ijv = np.vstack((r, c, arr[r,c])).T  # row, col, prob
   return ijv
@@ -48,34 +70,26 @@ def conv_smooth(probs, radius):
   values for each pixel location.
 
   Args:
-    probs: A 2D NumPy float32 array containing probability values.
+    probs: A 2D float32 TensorFlow tensor containing probability values.
     radius: Integer value for the radius of the disk kernel.
 
   Returns:
-    A 2D NumPy float32 array of the same shape as `probs` containing
-    smoothed probability values.
+    A 2D float32 TensorFlow tensor of the same shape as `probs`
+    containing smoothed probability values.
   """
   d = radius
 
   # create kernel
   kernel = disk_kernel(d)
   kernel = kernel / np.count_nonzero(kernel)
+  kernel = kernel.reshape((*(kernel.shape), 1, 1))  # shape (h,w,c,f)
 
   # conv graph
-  with tf.Graph().as_default():
-    probs_tf = tf.placeholder(shape=probs.shape, dtype=tf.float32)
-    probs_tf_rshp = tf.reshape(probs_tf, (1, *(probs.shape), 1))
-    kernel_tf = tf.placeholder(shape=kernel.shape, dtype=tf.float32)
-    kernel_tf_rshp = tf.reshape(kernel_tf, (*(kernel.shape), 1, 1))
-    probs_padded_tf = tf.pad(probs_tf_rshp, paddings=[[0,0], [d, d], [d, d], [0,0]],
-        mode="SYMMETRIC")
-    probs_conv_padded_tf = tf.nn.conv2d(probs_padded_tf, kernel_tf_rshp, strides=(1,1,1,1),
-        padding="SAME")
-    probs_conv_tf = probs_conv_padded_tf[0, d:-d, d:-d, 0]
-
-    # evaluate
-    with tf.Session() as sess:
-      probs_conv = sess.run(probs_conv_tf, feed_dict={probs_tf: probs, kernel_tf: kernel})
+  probs = tf.expand_dims(probs, 0)  # shape (n,h,w)
+  probs = tf.expand_dims(probs, -1)  # shape (n,h,w,c)
+  probs_padded = tf.pad(probs, paddings=[[0,0], [d, d], [d, d], [0,0]], mode="SYMMETRIC")
+  probs_conv_padded = tf.nn.conv2d(probs_padded, kernel, strides=(1,1,1,1), padding="SAME")
+  probs_conv = probs_conv_padded[0, d:-d, d:-d, 0]
 
   return probs_conv
 
@@ -98,29 +112,33 @@ def smooth_prediction_results(pred_dir, img_dir, radius, hasHeader):
   img_files = list_files(img_dir, "*.tif")
   img_files = get_file_id(img_files, GROUND_TRUTH_FILE_ID_RE)
 
-  for k, pred_file in pred_files.items():
-    # TODO: use new `csv_2_arr` function
-    preds = np.array(get_locations_from_csv(pred_file, hasHeader=hasHeader, hasProb=True))
+  # create conv smoothing graph
+  probs_tf = tf.placeholder(shape=[None, None], dtype=tf.float32)
+  probs_smooth_tf = conv_smooth(probs_tf, radius)
 
-    # convert ijv predictions to prob maps
-    img_file = img_files[k]
-    img = np.asarray(Image.open(img_file))
-    h,w,c = img.shape
-    probs = ijv_2_arr(preds, h, w)
+  with tf.Session() as sess:
+    for k, pred_file in pred_files.items():
+      # TODO: use new `csv_2_arr` function
+      preds = np.array(get_locations_from_csv(pred_file, hasHeader=hasHeader, hasProb=True))
 
-    # smooth the probability maps
-    probs_smooth = conv_smooth(probs, radius)
+      # convert ijv predictions to prob maps
+      img_file = img_files[k]
+      h, w = Image.open(img_file).size
+      probs = ijv_2_arr(preds, h, w)
 
-    # convert smoothed prob map back to ijv predictions
-    preds_smooth = arr_2_ijv(probs_smooth)
+      # smooth the probability maps
+      probs_smooth = sess.run(probs_smooth_tf, feed_dict={probs_tf: probs})
 
-    # save the prediction results
-    smooth_dir = os.path.dirname(pred_dir + "/") + "_smoothed"
-    smooth_file_name = pred_file.replace(pred_dir, smooth_dir)
-    df = pd.DataFrame(preds_smooth, columns=['row', 'col', 'prob'])
-    dir = os.path.dirname(smooth_file_name)
-    os.makedirs(dir, exist_ok=True)
-    df.to_csv(smooth_file_name, index=False)
+      # convert smoothed prob map back to ijv predictions
+      preds_smooth = arr_2_ijv(probs_smooth)
+
+      # save the prediction results
+      smooth_dir = os.path.dirname(pred_dir + "/") + "_smoothed"
+      smooth_file_name = pred_file.replace(pred_dir, smooth_dir)
+      df = pd.DataFrame(preds_smooth, columns=['row', 'col', 'prob'])
+      dir = os.path.dirname(smooth_file_name)
+      os.makedirs(dir, exist_ok=True)
+      df.to_csv(smooth_file_name, index=False)
 
 
 def identify_mitoses(probs, radius, prob_thresh):
@@ -199,8 +217,7 @@ def detect_prediction_results(pred_dir, img_dir, radius, prob_thresh, hasHeader)
 
     # convert ijv predictions to prob maps
     img_file = img_files[k]
-    img = np.asarray(Image.open(img_file))
-    h,w,c = img.shape
+    h, w = Image.open(img_file).size
     probs = ijv_2_arr(preds, h, w)
 
     # detect the centers of the mitoses
