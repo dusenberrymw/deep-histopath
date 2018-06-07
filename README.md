@@ -16,10 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 {% endcomment %}
 -->
-
-# Predicting Breast Cancer Proliferation Scores with TensorFlow, Keras, and Apache Spark
-
-Note: This project is still a **work in progress**.  There is also an [experimental branch](https://github.com/dusenberrymw/systemml/tree/breast_cancer_experimental2/projects/breast_cancer) with additional files and experiments.
+# Deep Learning for Breast Cancer Mitosis Detection and Tumor Proliferation Score Prediction
 
 ## Overview
 The [Tumor Proliferation Assessment Challenge 2016 (TUPAC16)](http://tupac.tue-image.nl/) is a "Grand Challenge" that was created for the [2016 Medical Image Computing and Computer Assisted Intervention (MICCAI 2016)](http://miccai2016.org/en/) conference.  In this challenge, the goal is to develop state-of-the-art algorithms for automatic prediction of tumor proliferation scores from whole-slide histopathology images of breast tumors.
@@ -34,6 +31,11 @@ References: <br />
 [4] http://emedicine.medscape.com/article/1947145-workup#c12 <br />
 
 ## Goal & Approach
+
+### Mitosis Detection
+At a high level, as shown in Figure 1, our approach begins by preprocessing a dataset of regions of tissue from whole slide images (WSIs) of breast tumors into a dataset of mitotic and non-mitotic patches. We then train a convolutional neural network (CNN) model to predict the presence of a mitotic figure in a given patch. Given an initial trained model, we preprocess the raw dataset again with model-based false-positive (FP) oversampling to generate a more difficult training dataset. We then train a new model on this second dataset. To make predictions on a new image region, we apply the model to the image in a sliding window fashion with noise marginalization, yielding a prediction at each location. A clustering algorithm is then used to smooth the potentially noisy set of predictions into a set of final predictions for mitosis locations.
+
+### Tumor Proliferation Score Prediction (previous approach)
 In an effort to automate the process of classification, this project aims to develop a large-scale deep learning approach for predicting tumor scores directly from the pixels of whole-slide histopathology images (WSI).  Our proposed approach is based on a recent research paper from Stanford [1].  Starting with 500 extremely high-resolution tumor slide images [2] with accompanying score labels, we aim to make use of Apache Spark in a preprocessing step to cut and filter the images into smaller square samples, generating 4.7 million samples for a total of ~7TB of data [3].  We then utilize TensorFlow and Keras to train a deep convolutional neural network on these samples, making use of transfer learning by fine-tuning a modified ResNet50 model [4].  Our model takes as input the pixel values of the individual samples, and is trained to predict the correct tumor score classification for each one.  We also explore an alternative approach of first training a mitosis detection model [5] on an auxiliary mitosis dataset, and then applying it to the WSIs, based on an approach from Paeng et al. [6].  Ultimately, we aim to develop a model that is sufficiently stronger than existing approaches for the task of breast cancer tumor proliferation score classification.
 
 References: <br />
@@ -46,9 +48,59 @@ References: <br />
 
 ![Approach](approach.jpg)
 
----
+## Steps for Mitosis Detection
+### Packages
+- `pip3 install -U numpy keras tensorflow pillow pandas dask scikit-learn pytest`
 
-## Setup (*All nodes* unless other specified):
+### Help
+- all script files have a `--help` option that will output the command-line options
+
+### Raw data (on a shared filesystem on the ram machines):
+- images: `data/mitoses/mitoses_train_image_data` (the preprocessing code expects, by default, the `data/mitoses/mitoses_train_image_data` path to be available from the base directory of the project)
+- labels: `data/mitoses/mitoses_train_ground_truth`, (same as above for preprocessing code)
+
+### Preprocessing
+- basic: `python3 preprocess_mitoses.py --save_path=data/mitoses/patches --rotations_train=0 --translations_train=0 --p_train=0.0001 --p_val=0.0001 --seed 0`
+
+### Training
+- basic logreg: `python3 train_mitoses.py --patches_path=data/mitoses/patches --model=logreg`
+- basic logreg on GPU 0 of a GPU server: `CUDA_VISIBLE_DEVICES=0 python3 train_mitoses.py --patches_path=data/mitoses/patches --model=logreg`
+
+### Evaluation (optional)
+- eval above model: `python3 eval_mitoses.py --model_name=logreg --model_path=PATH_TO_EXPERIMENT_FOLDER_FROM_TRAINING/checkpoints/BEST_MODEL_IN_THIS_FOLDER.hdf5 --patches_path=data/mitoses/patches/val`
+- eval above model on GPU 0 of a GPU server: `CUDA_VISIBLE_DEVICES=0 python3 eval_mitoses.py --model_name=logreg --model_path=PATH_TO_EXPERIMENT_FOLDER_FROM_TRAINING/checkpoints/BEST_MODEL_IN_THIS_FOLDER.hdf5 --patches_path=data/mitoses/patches/val`
+
+### Hyperparameter Tuning
+- basic logreg: `python3 hyperparam_tune_mitoses.py --patches_path=data/mitoses/patches --models logreg --log_interval 1000`
+- basic logreg on GPU 0 of a GPU server: `CUDA_VISIBLE_DEVICES=0 python3 hyperparam_tune_mitoses.py --patches_path=data/mitoses/patches --models logreg --log_interval 1000`
+
+### Testing
+- `pytest file.py`
+
+### Prediction template
+```
+import numpy as np
+from tf.keras.models import load_model
+
+from train_mitoses import normalize
+
+model_file = ...  # hdf5 file, no sigmoid at the end
+model_name = ....  # "vgg", "resnet", or "logreg" currently
+threshold = ...  # scalar value
+patch_batch = ...  # numpy array of shape (N, 64, 64, 3) containing N images
+
+# load the model and add the sigmoid layer if we want to use easier-to-interpret threshold values
+base_model = load_model(model_file, compile=False)
+probs = keras.layers.Activation('sigmoid', name="sigmoid")(base_model.output)
+model = keras.models.Model(inputs=base_model.input, outputs=probs)
+
+# prediction
+norm_patch_batch = normalize((np.array(patch_batch) / 255).astype(np.float32), model_name)  # shape (N, 64, 64, 3)
+out_batch = model.predict_on_batch(norm_patch_batch)  # shape (N, 1) with probs
+pred = out_batch > threshold  # shape (N, 1) with binary predictions
+```
+
+## Setup for Tumor Proliferation Score Prediction (*All nodes* unless other specified):
 * System Packages:
   * `openslide`
 * Python packages:
